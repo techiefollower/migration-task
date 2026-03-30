@@ -46,9 +46,16 @@ public class MigrationsController : ControllerBase
     [HttpPost("{id:guid}/retry")]
     public async Task<IActionResult> Retry(Guid id, [FromBody] RetryMigrationRequest request, CancellationToken cancellationToken)
     {
-        var ok = await _migrations.RetryAsync(id, request, cancellationToken);
-        if (!ok)
-            return NotFound();
-        return NoContent();
+        try
+        {
+            var ok = await _migrations.RetryAsync(id, request, cancellationToken);
+            if (!ok)
+                return NotFound();
+            return NoContent();
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
     }
 }

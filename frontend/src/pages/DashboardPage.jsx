@@ -32,8 +32,8 @@ function statusChip(status) {
   const s = (status || '').toLowerCase()
   const map = {
     pending: { color: 'default', label: 'Pending', tip: 'Waiting for a Hangfire worker to start this job.' },
-    inprogress: { color: 'info', label: 'In progress', tip: 'Mirror clone or push is running.' },
-    completed: { color: 'success', label: 'Completed', tip: 'Repository mirror was pushed to GitHub.' },
+    inprogress: { color: 'info', label: 'In progress', tip: 'gh ado2gh is running on the API host.' },
+    completed: { color: 'success', label: 'Completed', tip: 'ADO → GitHub migration finished (ado2gh).' },
     failed: { color: 'error', label: 'Failed', tip: 'See logs for details. You can retry with fresh PATs.' },
   }
   const cfg = map[s] || { color: 'default', label: status, tip: '' }

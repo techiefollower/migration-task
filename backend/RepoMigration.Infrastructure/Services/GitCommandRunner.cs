@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Linq;
 
 namespace RepoMigration.Infrastructure.Services;
 
@@ -17,7 +18,7 @@ internal static class GitCommandRunner
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
-            CreateNoWindow = true
+            CreateNoWindow = true,
         };
 
         using var process = new Process { StartInfo = psi };

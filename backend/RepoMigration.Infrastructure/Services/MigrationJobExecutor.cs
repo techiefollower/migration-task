@@ -1,7 +1,9 @@
 using System.ComponentModel;
+using System.IO;
 using System.Text.RegularExpressions;
 using Hangfire;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RepoMigration.Core.Contracts;
@@ -14,17 +16,23 @@ public class MigrationJobExecutor
 {
     private static readonly string[] AllowedVisibilities = ["private", "public", "internal"];
 
+    private const string GhNotFoundUserHint =
+        "[rm-api-gh] GitHub CLI could not be started. Install: winget install GitHub.cli — then set RepoMigration.Api/appsettings.json GhCli:ExecutablePath to the output of PowerShell (Get-Command gh).Source (double backslashes in JSON), or set GH_CLI_PATH, and restart the API. If you do NOT see [rm-api-gh] at the start of this message, stop the API, delete bin/obj folders, rebuild RepoMigration.Api, and run again.";
+
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IGhCliPathResolver _ghCliPath;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<MigrationJobExecutor> _logger;
 
     public MigrationJobExecutor(
         IServiceScopeFactory scopeFactory,
         IGhCliPathResolver ghCliPath,
+        IConfiguration configuration,
         ILogger<MigrationJobExecutor> logger)
     {
         _scopeFactory = scopeFactory;
         _ghCliPath = ghCliPath;
+        _configuration = configuration;
         _logger = logger;
     }
 
@@ -93,14 +101,33 @@ public class MigrationJobExecutor
 
             await AppendLogAsync(db, migrationId, $"Using GitHub CLI: {ghExe}").ConfigureAwait(false);
 
-            await AppendLogAsync(db, migrationId, $"Step 1/3: gh ado2gh inventory-report for org '{adoOrg}'…").ConfigureAwait(false);
-            var inventoryArgs = new List<string> { "ado2gh", "inventory-report", "--ado-org", adoOrg };
-            var (invCode, invOut) = await GhCliRunner.RunAsync(ghExe, workRoot, inventoryArgs, adoPat, githubPat).ConfigureAwait(false);
-            await AppendLogAsync(db, migrationId, SanitizeGhOutput("inventory-report finished.", invOut)).ConfigureAwait(false);
-            if (invCode != 0)
+            var skipInventory = _configuration.GetValue("GhAdo2Gh:SkipInventoryReport", true);
+            await AppendLogAsync(db, migrationId,
+                    $"GhAdo2Gh:SkipInventoryReport resolved to {skipInventory} (set false only to run inventory; env override: GhAdo2Gh__SkipInventoryReport).")
+                .ConfigureAwait(false);
+            if (skipInventory)
             {
-                await FailAsync(db, migrationId, $"gh ado2gh inventory-report failed (exit {invCode}).").ConfigureAwait(false);
-                return;
+                await AppendLogAsync(db, migrationId,
+                        "Step 1/3: Skipped gh ado2gh inventory-report (GhAdo2Gh:SkipInventoryReport is true). " +
+                        "migrate-repo does not use the CSV output; enable inventory only if you need preflight pipeline discovery (ADO PAT must include Build: Read).")
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                await AppendLogAsync(db, migrationId, $"Step 1/3: gh ado2gh inventory-report for org '{adoOrg}'…").ConfigureAwait(false);
+                var inventoryArgs = new List<string> { "ado2gh", "inventory-report", "--ado-org", adoOrg };
+                var (invCode, invOut) = await GhCliRunner.RunAsync(ghExe, workRoot, inventoryArgs, adoPat, githubPat).ConfigureAwait(false);
+                await AppendLogAsync(db, migrationId, SanitizeGhOutput("inventory-report finished.", invOut)).ConfigureAwait(false);
+                if (invCode != 0)
+                {
+                    await FailAsync(db, migrationId,
+                            $"gh ado2gh inventory-report failed (exit {invCode}). " +
+                            "This often fails at \"Finding Pipelines\" when the ADO PAT lacks Build (Read) or Azure returns a pipeline API error. " +
+                            "Set GhAdo2Gh:SkipInventoryReport to true in appsettings.json to run migrate-repo without inventory (recommended for this app). " +
+                            $"Or grant Build: Read on the PAT and retry.{Ado2GhExtensionInstallHint(invOut)}")
+                        .ConfigureAwait(false);
+                    return;
+                }
             }
 
             await AppendLogAsync(db, migrationId,
@@ -123,7 +150,7 @@ public class MigrationJobExecutor
             if (!migrateOk)
             {
                 await FailAsync(db, migrationId,
-                        $"gh ado2gh migrate-repo failed (exit {migCode}). Check logs above; ensure 'gh' and extension 'github/gh-ado2gh' are installed on the server.")
+                        $"gh ado2gh migrate-repo failed (exit {migCode}). Check logs above; ensure 'gh' and extension 'github/gh-ado2gh' are installed on the server.{Ado2GhExtensionInstallHint(migOut)}")
                     .ConfigureAwait(false);
                 return;
             }
@@ -147,7 +174,8 @@ public class MigrationJobExecutor
                 await AppendLogAsync(db, migrationId, SanitizeGhOutput("rewire-pipeline output:", rwOut)).ConfigureAwait(false);
                 if (rwCode != 0)
                 {
-                    await FailAsync(db, migrationId, $"gh ado2gh rewire-pipeline failed (exit {rwCode}). Repository may already be on GitHub; fix pipeline settings and retry.")
+                    await FailAsync(db, migrationId,
+                            $"gh ado2gh rewire-pipeline failed (exit {rwCode}). Repository may already be on GitHub; fix pipeline settings and retry.{Ado2GhExtensionInstallHint(rwOut)}")
                         .ConfigureAwait(false);
                     return;
                 }
@@ -166,11 +194,17 @@ public class MigrationJobExecutor
         catch (Win32Exception ex) when (ex.NativeErrorCode == 2 && OperatingSystem.IsWindows())
         {
             _logger.LogError(ex, "GitHub CLI not found for migration {MigrationId}", migrationId);
-            await FailAsync(
-                    db,
-                    migrationId,
-                    "GitHub CLI (gh) was not found by the API process. Install from https://cli.github.com/ or set GhCli:ExecutablePath in appsettings.json to the full path of gh.exe (for example C:\\Program Files\\GitHub CLI\\gh.exe). Visual Studio / IIS often do not inherit the same PATH as your terminal.")
-                .ConfigureAwait(false);
+            await FailAsync(db, migrationId, GhNotFoundUserHint).ConfigureAwait(false);
+        }
+        catch (IOException ex) when (ex.Message.Contains("cannot find the file", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogError(ex, "GitHub CLI not found (IO) for migration {MigrationId}", migrationId);
+            await FailAsync(db, migrationId, GhNotFoundUserHint).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (IsWindowsProcessStartFailureForGh(ex))
+        {
+            _logger.LogError(ex, "GitHub CLI process start failed for migration {MigrationId}", migrationId);
+            await FailAsync(db, migrationId, GhNotFoundUserHint).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -192,6 +226,26 @@ public class MigrationJobExecutor
         }
     }
 
+    private static bool IsWindowsProcessStartFailureForGh(Exception ex)
+    {
+        if (!OperatingSystem.IsWindows())
+            return false;
+        for (var e = ex; e != null; e = e.InnerException)
+        {
+            if (e is Win32Exception w && w.NativeErrorCode == 2)
+                return true;
+            var m = e.Message ?? string.Empty;
+            if (m.Contains("trying to start process", StringComparison.OrdinalIgnoreCase) &&
+                m.Contains("gh", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (m.Contains("cannot find the file", StringComparison.OrdinalIgnoreCase) &&
+                m.Contains("gh", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
     private static bool LooksLikeMigrateSucceeded(string output)
     {
         if (string.IsNullOrWhiteSpace(output))
@@ -203,6 +257,17 @@ public class MigrationJobExecutor
         if (output.Contains("No operation will be performed", StringComparison.OrdinalIgnoreCase))
             return false;
         return true;
+    }
+
+    private static string Ado2GhExtensionInstallHint(string combinedOutput)
+    {
+        if (string.IsNullOrEmpty(combinedOutput))
+            return string.Empty;
+        if (!combinedOutput.Contains("ado2gh", StringComparison.OrdinalIgnoreCase))
+            return string.Empty;
+        if (!combinedOutput.Contains("unknown command", StringComparison.OrdinalIgnoreCase))
+            return string.Empty;
+        return " Install the ado2gh extension on the machine that runs this API (same user as the service if applicable), then restart the API: gh extension install github/gh-ado2gh";
     }
 
     private static string SanitizeGhOutput(string prefix, string output)

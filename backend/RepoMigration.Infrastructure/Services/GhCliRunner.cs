@@ -41,16 +41,20 @@ internal static class GhCliRunner
         psi.Environment["CI"] = "1";
 
         var ext = Path.GetExtension(ghExecutablePath);
+        var bareGhOnWindows = OperatingSystem.IsWindows() &&
+            string.Equals(ghExecutablePath, "gh", StringComparison.OrdinalIgnoreCase);
         if (ext.Equals(".cmd", StringComparison.OrdinalIgnoreCase) ||
-            ext.Equals(".bat", StringComparison.OrdinalIgnoreCase))
+            ext.Equals(".bat", StringComparison.OrdinalIgnoreCase) ||
+            bareGhOnWindows)
         {
+            var program = bareGhOnWindows ? "gh" : ghExecutablePath;
             var comspec = Environment.GetEnvironmentVariable("ComSpec")
                 ?? Path.Combine(Environment.SystemDirectory, "cmd.exe");
             psi.FileName = comspec;
             psi.ArgumentList.Add("/d");
             psi.ArgumentList.Add("/s");
             psi.ArgumentList.Add("/c");
-            psi.ArgumentList.Add(BuildCmdCCommandLine(ghExecutablePath, argumentList));
+            psi.ArgumentList.Add(BuildCmdCCommandLine(program, argumentList));
         }
         else
         {
@@ -58,6 +62,8 @@ internal static class GhCliRunner
             foreach (var arg in argumentList)
                 psi.ArgumentList.Add(arg);
         }
+
+        WindowsPathMerge.ApplyMergedPathAndPathext(psi);
 
         using var process = new Process { StartInfo = psi };
         process.Start();
@@ -92,4 +98,5 @@ internal static class GhCliRunner
             return arg;
         return '"' + arg.Replace("\"", "\"\"", StringComparison.Ordinal) + '"';
     }
+
 }

@@ -17,15 +17,18 @@ public sealed class MigrationService : IMigrationService
 
     private readonly ApplicationDbContext _db;
     private readonly IBackgroundJobClient _backgroundJobs;
+    private readonly IGhCliPathResolver _ghCliPath;
     private readonly ILogger<MigrationService> _logger;
 
     public MigrationService(
         ApplicationDbContext db,
         IBackgroundJobClient backgroundJobs,
+        IGhCliPathResolver ghCliPath,
         ILogger<MigrationService> logger)
     {
         _db = db;
         _backgroundJobs = backgroundJobs;
+        _ghCliPath = ghCliPath;
         _logger = logger;
     }
 
@@ -38,6 +41,8 @@ public sealed class MigrationService : IMigrationService
 
         if (request.Repositories == null || request.Repositories.Count == 0)
             throw new ArgumentException("Select at least one repository.");
+
+        GhCliPrerequisite.ThrowIfHostCannotRunGh(_ghCliPath);
 
         var queued = new List<QueuedMigrationDto>();
         foreach (var item in request.Repositories)
@@ -133,6 +138,8 @@ public sealed class MigrationService : IMigrationService
         var entity = await _db.RepoMigrations.FirstOrDefaultAsync(m => m.Id == id, cancellationToken).ConfigureAwait(false);
         if (entity == null || entity.Status != MigrationStatus.Failed)
             return false;
+
+        GhCliPrerequisite.ThrowIfHostCannotRunGh(_ghCliPath);
 
         entity.Status = MigrationStatus.Pending;
         entity.UpdatedAt = DateTimeOffset.UtcNow;

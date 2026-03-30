@@ -105,7 +105,7 @@ export default function AppLayout() {
       </Toolbar>
       {!isMini && (
         <Typography variant="body2" color="text.secondary" sx={{ px: 2, pb: 1 }}>
-          Mirror clone &amp; push
+          gh ado2gh (inventory, migrate, rewire)
         </Typography>
       )}
       <Divider sx={{ borderColor: 'rgba(255,255,255,0.08)' }} />
