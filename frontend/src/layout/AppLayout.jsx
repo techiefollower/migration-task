@@ -8,6 +8,7 @@ import {
   ListItemButton,
   ListItemText,
   Toolbar,
+  Tooltip,
   Typography,
   Divider,
   useMediaQuery,
@@ -25,7 +26,7 @@ const nav = [
 export default function AppLayout() {
   const theme = useTheme()
   const isMobile = useMediaQuery(theme.breakpoints.down('md'))
-  // Desktop states: 2 = full, 1 = mini, 0 = closed
+  // Desktop: 2 = full width, 1 = compact rail (never fully hidden — toggle between these only)
   const [desktopNavState, setDesktopNavState] = useState(2)
   const [mobileOpen, setMobileOpen] = useState(false)
 
@@ -41,18 +42,15 @@ export default function AppLayout() {
   }
 
   const isMini = !isMobile && desktopNavState === 1
-  const isClosed = !isMobile && desktopNavState === 0
   const drawerCurrentWidth = isMobile
     ? drawerWidth
     : desktopNavState === 2
       ? drawerWidth
-      : desktopNavState === 1
-        ? drawerMiniWidth
-        : 0
+      : drawerMiniWidth
 
-  const collapseStep = () => {
+  const toggleDesktopSidebar = () => {
     if (isMobile) return
-    setDesktopNavState((s) => (s === 2 ? 1 : s === 1 ? 0 : 2))
+    setDesktopNavState((s) => (s === 2 ? 1 : 2))
   }
 
   const drawerContent = (
@@ -78,34 +76,37 @@ export default function AppLayout() {
           </Box>
         )}
         {!isMobile ? (
-          <IconButton
-            edge="end"
-            size="small"
-            onClick={collapseStep}
-            aria-label="Collapse sidebar"
+          <Tooltip
             title={
               desktopNavState === 2
-                ? 'Shrink menu'
-                : desktopNavState === 1
-                  ? 'Close menu'
-                  : 'Open menu'
+                ? 'Compact sidebar (icons only)'
+                : 'Expand sidebar'
             }
-            sx={{
-              border: '1px solid rgba(255,255,255,0.12)',
-              borderRadius: 2,
-              flexShrink: 0,
-              ml: isMini ? 0 : 'auto',
-            }}
+            placement="right"
           >
-            <Typography component="span" sx={{ fontSize: '1.1rem', lineHeight: 1 }} aria-hidden>
-              {desktopNavState === 2 ? '⟨' : desktopNavState === 1 ? '×' : '☰'}
-            </Typography>
-          </IconButton>
+            <IconButton
+              edge="end"
+              size="small"
+              onClick={toggleDesktopSidebar}
+              aria-label={desktopNavState === 2 ? 'Compact sidebar' : 'Expand sidebar'}
+              aria-expanded={desktopNavState === 2}
+              sx={{
+                border: '1px solid rgba(255,255,255,0.12)',
+                borderRadius: 2,
+                flexShrink: 0,
+                ml: isMini ? 0 : 'auto',
+              }}
+            >
+              <Typography component="span" sx={{ fontSize: '1.15rem', lineHeight: 1 }} aria-hidden>
+                {desktopNavState === 2 ? '☰' : '»'}
+              </Typography>
+            </IconButton>
+          </Tooltip>
         ) : null}
       </Toolbar>
       {!isMini && (
-        <Typography variant="body2" color="text.secondary" sx={{ px: 2, pb: 1 }}>
-          gh ado2gh (inventory, migrate, rewire)
+        <Typography variant="body2" color="text.secondary" sx={{ px: 3, pb: 1 }}>
+         ( Using ado2gh Extension )
         </Typography>
       )}
       <Divider sx={{ borderColor: 'rgba(255,255,255,0.08)' }} />
@@ -164,7 +165,7 @@ export default function AppLayout() {
             width: drawerCurrentWidth,
             boxSizing: 'border-box',
             bgcolor: 'background.paper',
-            borderRight: isClosed ? 'none' : '1px solid rgba(255,255,255,0.06)',
+            borderRight: '1px solid rgba(255,255,255,0.06)',
             overflowX: 'hidden',
             transition: theme.transitions.create('width', {
               easing: theme.transitions.easing.sharp,
@@ -188,7 +189,7 @@ export default function AppLayout() {
           p: { xs: 2, md: 4 },
         }}
       >
-        {(isMobile || isClosed) && (
+        {isMobile && (
           <Toolbar
             disableGutters
             sx={{
@@ -198,23 +199,22 @@ export default function AppLayout() {
               alignItems: 'center',
             }}
           >
-            <IconButton
-              color="inherit"
-              edge="start"
-              onClick={() => {
-                if (isMobile) setMobileOpen(true)
-                else setDesktopNavState(2)
-              }}
-              aria-label="Open menu"
-              sx={{
-                border: '1px solid rgba(255,255,255,0.12)',
-                borderRadius: 2,
-              }}
-            >
-              <Typography component="span" sx={{ fontSize: '1.25rem', lineHeight: 1 }}>
-                ☰
-              </Typography>
-            </IconButton>
+            <Tooltip title="Open menu">
+              <IconButton
+                color="inherit"
+                edge="start"
+                onClick={() => setMobileOpen(true)}
+                aria-label="Open menu"
+                sx={{
+                  border: '1px solid rgba(255,255,255,0.12)',
+                  borderRadius: 2,
+                }}
+              >
+                <Typography component="span" sx={{ fontSize: '1.25rem', lineHeight: 1 }}>
+                  ☰
+                </Typography>
+              </IconButton>
+            </Tooltip>
             <Typography variant="subtitle1" fontWeight={700} noWrap>
               Repo Migration
             </Typography>

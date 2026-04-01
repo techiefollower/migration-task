@@ -13,7 +13,10 @@ public class RepoMigrationRecord
     public string TargetUrl { get; set; } = string.Empty;
     /// <summary>GitHub visibility passed to <c>gh ado2gh migrate-repo --target-repo-visibility</c>.</summary>
     public string TargetRepoVisibility { get; set; } = "private";
-    /// <summary>Optional ADO pipeline name or id for <c>gh ado2gh rewire-pipeline</c>.</summary>
+    /// <summary>
+    /// Optional ADO build pipeline for <c>gh ado2gh rewire-pipeline</c>: definition <b>name</b> or folder path (e.g. <c>\Services\CI</c>),
+    /// or digits-only <b>definition id</b> from the pipeline URL (passed as <c>--ado-pipeline-id</c>).
+    /// </summary>
     public string? AdoPipeline { get; set; }
     /// <summary>ADO service connection id (GUID) for rewire-pipeline.</summary>
     public string? ServiceConnectionId { get; set; }

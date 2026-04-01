@@ -1,7 +1,7 @@
 using System.ComponentModel;
+using System.Globalization;
 using System.IO;
 using System.Text.RegularExpressions;
-using Hangfire;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -36,8 +36,6 @@ public class MigrationJobExecutor
         _logger = logger;
     }
 
-    [AutomaticRetry(Attempts = 0)]
-    [Queue("migrations")]
     public async Task RunAsync(Guid migrationId, string adoPat, string githubPat, string githubOwner)
     {
         using var scope = _scopeFactory.CreateScope();
@@ -165,11 +163,22 @@ public class MigrationJobExecutor
                     "ado2gh", "rewire-pipeline",
                     "--ado-org", adoOrg,
                     "--ado-team-project", adoProject,
-                    "--ado-pipeline", pipeline,
                     "--github-org", githubOwner.Trim(),
                     "--github-repo", entity.RepoName,
                     "--service-connection-id", serviceConn,
                 };
+                // ado2gh: name/path uses --ado-pipeline; numeric definition id from pipeline URL uses --ado-pipeline-id (mutually exclusive).
+                if (int.TryParse(pipeline, NumberStyles.None, CultureInfo.InvariantCulture, out var pipelineDefId) &&
+                    pipelineDefId > 0)
+                {
+                    rewireArgs.Add("--ado-pipeline-id");
+                    rewireArgs.Add(pipelineDefId.ToString(CultureInfo.InvariantCulture));
+                }
+                else
+                {
+                    rewireArgs.Add("--ado-pipeline");
+                    rewireArgs.Add(pipeline);
+                }
                 var (rwCode, rwOut) = await GhCliRunner.RunAsync(ghExe, workRoot, rewireArgs, adoPat, githubPat).ConfigureAwait(false);
                 await AppendLogAsync(db, migrationId, SanitizeGhOutput("rewire-pipeline output:", rwOut)).ConfigureAwait(false);
                 if (rwCode != 0)

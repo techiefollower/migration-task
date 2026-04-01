@@ -350,12 +350,10 @@ export default function WizardPage() {
   return (
     <Box sx={{ maxWidth: 1100, mx: 'auto' }}>
       <Typography variant="h4" gutterBottom>
-        Migration wizard
+        Migration Wizard
       </Typography>
       <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-        Connect to Azure DevOps, pick repositories, then queue migrations. The server runs{' '}
-        <strong>gh ado2gh</strong>: inventory report, migrate-repo, and optional pipeline rewire (requires{' '}
-        <code>gh</code> + extension on the API host).
+        Select Azure DevOps repositories to migrate to GitHub.
       </Typography>
 
       <Stepper activeStep={activeStep} alternativeLabel sx={{ mb: 3 }}>
@@ -723,7 +721,7 @@ export default function WizardPage() {
                   value={adoPipeline}
                   onChange={(e) => setAdoPipeline(e.target.value)}
                   fullWidth
-                  helperText="Pipeline name or id — use with service connection id below, or leave both empty."
+                  helperText="Pipeline definition name or folder path (e.g. \\Folder\\MyBuild), or numeric definitionId from the pipeline URL only — not the repo/project name. Pair with service connection id, or leave both empty."
                 />
                 <TextField
                   label="ADO service connection id (optional)"
@@ -763,10 +761,10 @@ export default function WizardPage() {
           {activeStep === 3 && (
             <Box sx={{ textAlign: 'center', py: 2 }}>
               <Typography variant="h6" gutterBottom>
-                Migrations queued
+                Migration request submitted
               </Typography>
               <Typography color="text.secondary" sx={{ mb: 3 }}>
-                Jobs run in Hangfire and execute <strong>gh ado2gh</strong> on the server. Track logs and status on the
+                Migrations execute on the API server using <strong>gh ado2gh</strong>. Track logs and status on the
                 dashboard.
               </Typography>
               <Button variant="contained" size="large" onClick={() => navigate('/dashboard')}>

@@ -1,5 +1,4 @@
 using System.Text.RegularExpressions;
-using Hangfire;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RepoMigration.Core.Contracts;
@@ -16,18 +15,18 @@ public sealed class MigrationService : IMigrationService
     private static readonly HashSet<string> AllowedVisibilities = new(StringComparer.OrdinalIgnoreCase) { "private", "public", "internal" };
 
     private readonly ApplicationDbContext _db;
-    private readonly IBackgroundJobClient _backgroundJobs;
+    private readonly MigrationJobExecutor _jobExecutor;
     private readonly IGhCliPathResolver _ghCliPath;
     private readonly ILogger<MigrationService> _logger;
 
     public MigrationService(
         ApplicationDbContext db,
-        IBackgroundJobClient backgroundJobs,
+        MigrationJobExecutor jobExecutor,
         IGhCliPathResolver ghCliPath,
         ILogger<MigrationService> logger)
     {
         _db = db;
-        _backgroundJobs = backgroundJobs;
+        _jobExecutor = jobExecutor;
         _ghCliPath = ghCliPath;
         _logger = logger;
     }
@@ -82,11 +81,15 @@ public sealed class MigrationService : IMigrationService
             _db.RepoMigrations.Add(entity);
             await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-            _backgroundJobs.Enqueue<MigrationJobExecutor>(j =>
-                j.RunAsync(entity.Id, request.AdoPersonalAccessToken, request.GitHubPersonalAccessToken, request.GitHubOwner.Trim()));
+            await _jobExecutor.RunAsync(
+                    entity.Id,
+                    request.AdoPersonalAccessToken,
+                    request.GitHubPersonalAccessToken,
+                    request.GitHubOwner.Trim())
+                .ConfigureAwait(false);
 
             queued.Add(new QueuedMigrationDto(entity.Id, entity.RepoName, entity.TargetUrl));
-            _logger.LogInformation("Queued migration {MigrationId} for repository {RepoName}", entity.Id, entity.RepoName);
+            _logger.LogInformation("Executed migration {MigrationId} for repository {RepoName}", entity.Id, entity.RepoName);
         }
 
         return new QueueMigrationsResponse(queued);
@@ -145,10 +148,14 @@ public sealed class MigrationService : IMigrationService
         entity.UpdatedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-        _backgroundJobs.Enqueue<MigrationJobExecutor>(j =>
-            j.RunAsync(entity.Id, request.AdoPersonalAccessToken, request.GitHubPersonalAccessToken, request.GitHubOwner.Trim()));
+        await _jobExecutor.RunAsync(
+                entity.Id,
+                request.AdoPersonalAccessToken,
+                request.GitHubPersonalAccessToken,
+                request.GitHubOwner.Trim())
+            .ConfigureAwait(false);
 
-        _logger.LogInformation("Re-queued migration {MigrationId}", id);
+        _logger.LogInformation("Executed retry migration {MigrationId}", id);
         return true;
     }
 }

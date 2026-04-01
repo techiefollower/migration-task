@@ -31,7 +31,7 @@ import { api } from '../api/client'
 function statusChip(status) {
   const s = (status || '').toLowerCase()
   const map = {
-    pending: { color: 'default', label: 'Pending', tip: 'Waiting for a Hangfire worker to start this job.' },
+    pending: { color: 'default', label: 'Pending', tip: 'Waiting for the API to begin this migration.' },
     inprogress: { color: 'info', label: 'In progress', tip: 'gh ado2gh is running on the API host.' },
     completed: { color: 'success', label: 'Completed', tip: 'ADO → GitHub migration finished (ado2gh).' },
     failed: { color: 'error', label: 'Failed', tip: 'See logs for details. You can retry with fresh PATs.' },
@@ -449,7 +449,7 @@ export default function DashboardPage() {
               </Button>
             </span>
           </Tooltip>
-          <Tooltip title="Requires all fields. Re-queues the Hangfire migration job.">
+          <Tooltip title="Requires all fields. Re-runs the migration on the API server.">
             <span>
               <Button
                 onClick={submitRetry}

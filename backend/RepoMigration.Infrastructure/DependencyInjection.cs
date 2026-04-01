@@ -1,5 +1,3 @@
-using Hangfire;
-using Hangfire.SqlServer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -30,24 +28,6 @@ public static class DependencyInjection
         services.AddScoped<IMigrationService, MigrationService>();
         services.AddSingleton<IGhCliPathResolver, GhCliPathResolver>();
         services.AddScoped<MigrationJobExecutor>();
-
-        services.AddHangfire(config => config
-            .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
-            .UseSimpleAssemblyNameTypeSerializer()
-            .UseRecommendedSerializerSettings()
-            .UseSqlServerStorage(connectionString, new SqlServerStorageOptions
-            {
-                CommandBatchMaxTimeout = TimeSpan.FromMinutes(5),
-                SlidingInvisibilityTimeout = TimeSpan.FromMinutes(5),
-                QueuePollInterval = TimeSpan.Zero,
-                UseRecommendedIsolationLevel = true,
-                DisableGlobalLocks = true
-            }));
-
-        services.AddHangfireServer(options =>
-        {
-            options.Queues = new[] { "default", "migrations" };
-        });
 
         return services;
     }
