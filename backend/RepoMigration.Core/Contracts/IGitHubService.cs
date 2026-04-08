@@ -18,4 +18,7 @@ public interface IGitHubService
         string authenticatedLogin,
         string repoName,
         CancellationToken cancellationToken = default);
+
+    /// <summary>Uses GET /orgs/{login} and GET /users/{login} to detect whether <paramref name="owner"/> is an org or personal user.</summary>
+    Task<GitHubOwnerKindResponse> GetOwnerKindAsync(string personalAccessToken, string owner, CancellationToken cancellationToken = default);
 }

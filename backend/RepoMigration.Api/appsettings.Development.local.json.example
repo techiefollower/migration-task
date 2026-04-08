@@ -1,0 +1,9 @@
+{
+  "AzureAd": {
+    "DisableAuthentication": false,
+    "Instance": "https://login.microsoftonline.com/",
+    "TenantId": "YOUR_TENANT_ID",
+    "ClientId": "YOUR_API_APP_CLIENT_ID",
+    "Audience": "api://YOUR_API_APP_CLIENT_ID"
+  }
+}

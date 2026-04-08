@@ -1,14 +1,11 @@
 using System.ComponentModel;
-using System.Globalization;
 using System.IO;
+using System.Text;
 using System.Text.RegularExpressions;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RepoMigration.Core.Contracts;
-using RepoMigration.Core.Enums;
-using RepoMigration.Infrastructure.Data;
+using RepoMigration.Core.Dtos;
 
 namespace RepoMigration.Infrastructure.Services;
 
@@ -19,69 +16,57 @@ public class MigrationJobExecutor
     private const string GhNotFoundUserHint =
         "[rm-api-gh] GitHub CLI could not be started. Install: winget install GitHub.cli — then set RepoMigration.Api/appsettings.json GhCli:ExecutablePath to the output of PowerShell (Get-Command gh).Source (double backslashes in JSON), or set GH_CLI_PATH, and restart the API. If you do NOT see [rm-api-gh] at the start of this message, stop the API, delete bin/obj folders, rebuild RepoMigration.Api, and run again.";
 
-    private readonly IServiceScopeFactory _scopeFactory;
     private readonly IGhCliPathResolver _ghCliPath;
     private readonly IConfiguration _configuration;
+    private readonly IGitHubService _github;
     private readonly ILogger<MigrationJobExecutor> _logger;
 
     public MigrationJobExecutor(
-        IServiceScopeFactory scopeFactory,
         IGhCliPathResolver ghCliPath,
         IConfiguration configuration,
+        IGitHubService github,
         ILogger<MigrationJobExecutor> logger)
     {
-        _scopeFactory = scopeFactory;
         _ghCliPath = ghCliPath;
         _configuration = configuration;
+        _github = github;
         _logger = logger;
     }
 
-    public async Task RunAsync(Guid migrationId, string adoPat, string githubPat, string githubOwner)
+    public async Task<MigrationJobResult> RunAsync(
+        MigrationJobParams job,
+        bool skipGitHubPatValidation,
+        CancellationToken cancellationToken = default)
     {
-        using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        var github = scope.ServiceProvider.GetRequiredService<IGitHubService>();
+        var log = new StringBuilder();
+        var workId = Guid.NewGuid().ToString("N");
+        var workRoot = Path.Combine(Path.GetTempPath(), "repo-migration", "ado2gh", workId);
 
-        var entity = await db.RepoMigrations.FirstOrDefaultAsync(m => m.Id == migrationId).ConfigureAwait(false);
-        if (entity == null)
+        void Append(string line)
         {
-            _logger.LogWarning("Migration job skipped: record {MigrationId} not found", migrationId);
-            return;
+            var ts = DateTimeOffset.UtcNow.ToString("u");
+            log.Append('[').Append(ts).Append("] ").AppendLine(line.TrimEnd());
         }
 
-        if (entity.Status != MigrationStatus.Pending)
-        {
-            _logger.LogInformation("Migration job skipped: record {MigrationId} is not pending", migrationId);
-            return;
-        }
-
-        entity.Status = MigrationStatus.InProgress;
-        entity.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync().ConfigureAwait(false);
-
-        var workRoot = Path.Combine(Path.GetTempPath(), "repo-migration", "ado2gh", migrationId.ToString("N"));
         try
         {
-            await AppendLogAsync(db, migrationId, "Validating GitHub token…").ConfigureAwait(false);
-            var validation = await github.ValidateTokenAsync(githubPat).ConfigureAwait(false);
-            if (!validation.Valid || string.IsNullOrWhiteSpace(validation.Login))
+            if (!skipGitHubPatValidation)
             {
-                await FailAsync(db, migrationId, validation.Error ?? "GitHub token invalid.").ConfigureAwait(false);
-                return;
+                Append("Validating GitHub token…");
+                var validation = await _github.ValidateTokenAsync(job.GitHubPersonalAccessToken, cancellationToken).ConfigureAwait(false);
+                if (!validation.Valid || string.IsNullOrWhiteSpace(validation.Login))
+                    return Fail(log, validation.Error ?? "GitHub token invalid.");
             }
 
-            if (!AzureDevOpsGitUrlParser.TryParse(entity.SourceUrl, out var adoOrg, out var adoProject, out var adoRepo))
+            if (!AzureDevOpsGitUrlParser.TryParse(job.SourceRemoteUrl, out var adoOrg, out var adoProject, out var adoRepo))
             {
-                await FailAsync(
-                        db,
-                        migrationId,
-                        "Could not parse Azure DevOps Git URL for gh ado2gh. Expected https://dev.azure.com/{org}/{project}/_git/{repo} or https://{org}.visualstudio.com/…")
-                    .ConfigureAwait(false);
-                return;
+                return Fail(
+                    log,
+                    "Could not parse Azure DevOps Git URL for gh ado2gh. Expected https://dev.azure.com/{org}/{project}/_git/{repo} or https://{org}.visualstudio.com/…");
             }
 
-            var visibility = AllowedVisibilities.Contains(entity.TargetRepoVisibility?.Trim().ToLowerInvariant())
-                ? entity.TargetRepoVisibility!.Trim().ToLowerInvariant()
+            var visibility = AllowedVisibilities.Contains(job.TargetRepoVisibility?.Trim().ToLowerInvariant())
+                ? job.TargetRepoVisibility!.Trim().ToLowerInvariant()
                 : "private";
 
             Directory.CreateDirectory(workRoot);
@@ -89,137 +74,97 @@ public class MigrationJobExecutor
             var ghExe = _ghCliPath.ResolveGhExecutablePath();
             if (ghExe != "gh" && !File.Exists(ghExe))
             {
-                await FailAsync(
-                        db,
-                        migrationId,
-                        $"GitHub CLI not found at GhCli:ExecutablePath '{ghExe}'. Fix appsettings or install GitHub CLI.")
-                    .ConfigureAwait(false);
-                return;
+                return Fail(
+                    log,
+                    $"GitHub CLI not found at GhCli:ExecutablePath '{ghExe}'. Fix appsettings or install GitHub CLI.");
             }
 
-            await AppendLogAsync(db, migrationId, $"Using GitHub CLI: {ghExe}").ConfigureAwait(false);
-
+            var trustQueuedPat = _configuration.GetValue("Migration:TrustQueuedGitHubPat", false);
             var skipInventory = _configuration.GetValue("GhAdo2Gh:SkipInventoryReport", true);
-            await AppendLogAsync(db, migrationId,
-                    $"GhAdo2Gh:SkipInventoryReport resolved to {skipInventory} (set false only to run inventory; env override: GhAdo2Gh__SkipInventoryReport).")
-                .ConfigureAwait(false);
+            var preMigrateLines = new List<string>
+            {
+                skipGitHubPatValidation || trustQueuedPat
+                    ? "Skipped per-job GitHub PAT re-check (validated before migration batch)."
+                    : "GitHub PAT validated.",
+                $"Using GitHub CLI: {ghExe}",
+                $"GhAdo2Gh:SkipInventoryReport={skipInventory} (set false only to run inventory; env: GhAdo2Gh__SkipInventoryReport).",
+                "Note: gh ado2gh migrate-repo uses GitHub Enterprise Importer — large repos often take several minutes; this is normal.",
+            };
             if (skipInventory)
             {
-                await AppendLogAsync(db, migrationId,
-                        "Step 1/3: Skipped gh ado2gh inventory-report (GhAdo2Gh:SkipInventoryReport is true). " +
-                        "migrate-repo does not use the CSV output; enable inventory only if you need preflight pipeline discovery (ADO PAT must include Build: Read).")
-                    .ConfigureAwait(false);
+                preMigrateLines.Add(
+                    "Step 1/2: Skipped inventory-report — migrate-repo does not need the CSV (enable only if you need ADO pipeline inventory; PAT needs Build: Read).");
             }
-            else
+
+            foreach (var line in preMigrateLines)
+                Append(line);
+
+            if (!skipInventory)
             {
-                await AppendLogAsync(db, migrationId, $"Step 1/3: gh ado2gh inventory-report for org '{adoOrg}'…").ConfigureAwait(false);
+                Append($"Step 1/2: gh ado2gh inventory-report for org '{adoOrg}'…");
                 var inventoryArgs = new List<string> { "ado2gh", "inventory-report", "--ado-org", adoOrg };
-                var (invCode, invOut) = await GhCliRunner.RunAsync(ghExe, workRoot, inventoryArgs, adoPat, githubPat).ConfigureAwait(false);
-                await AppendLogAsync(db, migrationId, SanitizeGhOutput("inventory-report finished.", invOut)).ConfigureAwait(false);
+                var (invCode, invOut) = await GhCliRunner.RunAsync(ghExe, workRoot, inventoryArgs, job.AdoPersonalAccessToken, job.GitHubPersonalAccessToken).ConfigureAwait(false);
+                Append(SanitizeGhOutput("inventory-report finished.", invOut));
                 if (invCode != 0)
                 {
-                    await FailAsync(db, migrationId,
-                            $"gh ado2gh inventory-report failed (exit {invCode}). " +
-                            "This often fails at \"Finding Pipelines\" when the ADO PAT lacks Build (Read) or Azure returns a pipeline API error. " +
-                            "Set GhAdo2Gh:SkipInventoryReport to true in appsettings.json to run migrate-repo without inventory (recommended for this app). " +
-                            $"Or grant Build: Read on the PAT and retry.{Ado2GhExtensionInstallHint(invOut)}")
-                        .ConfigureAwait(false);
-                    return;
+                    return Fail(
+                        log,
+                        $"gh ado2gh inventory-report failed (exit {invCode}). " +
+                        "This often fails at \"Finding Pipelines\" when the ADO PAT lacks Build (Read) or Azure returns a pipeline API error. " +
+                        "Set GhAdo2Gh:SkipInventoryReport to true in appsettings.json to run migrate-repo without inventory (recommended for this app). " +
+                        $"Or grant Build: Read on the PAT and retry.{Ado2GhExtensionInstallHint(invOut)}");
                 }
             }
 
-            await AppendLogAsync(db, migrationId,
-                    $"Step 2/3: gh ado2gh migrate-repo — ADO {adoOrg}/{adoProject}/{adoRepo} → GitHub {githubOwner}/{entity.RepoName} ({visibility})…")
-                .ConfigureAwait(false);
+            Append(
+                $"Step 2/2: gh ado2gh migrate-repo — ADO {adoOrg}/{adoProject}/{adoRepo} → GitHub {job.GitHubOwner.Trim()}/{job.TargetRepoName} ({visibility})…");
             var migrateArgs = new List<string>
             {
                 "ado2gh", "migrate-repo",
                 "--ado-org", adoOrg,
                 "--ado-team-project", adoProject,
                 "--ado-repo", adoRepo,
-                "--github-org", githubOwner.Trim(),
-                "--github-repo", entity.RepoName,
+                "--github-org", job.GitHubOwner.Trim(),
+                "--github-repo", job.TargetRepoName,
                 "--target-repo-visibility", visibility,
             };
-            var (migCode, migOut) = await GhCliRunner.RunAsync(ghExe, workRoot, migrateArgs, adoPat, githubPat).ConfigureAwait(false);
-            await AppendLogAsync(db, migrationId, SanitizeGhOutput("migrate-repo output:", migOut)).ConfigureAwait(false);
+            var (migCode, migOut) = await GhCliRunner.RunAsync(ghExe, workRoot, migrateArgs, job.AdoPersonalAccessToken, job.GitHubPersonalAccessToken).ConfigureAwait(false);
+            Append(SanitizeGhOutput("migrate-repo output:", migOut));
 
             var migrateOk = migCode == 0 && LooksLikeMigrateSucceeded(migOut);
             if (!migrateOk)
             {
-                await FailAsync(db, migrationId,
-                        $"gh ado2gh migrate-repo failed (exit {migCode}). Check logs above; ensure 'gh' and extension 'github/gh-ado2gh' are installed on the server.{Ado2GhExtensionInstallHint(migOut)}")
-                    .ConfigureAwait(false);
-                return;
+                return Fail(log, BuildMigrateRepoFailureUserMessage(migCode, migOut));
             }
 
-            var pipeline = entity.AdoPipeline?.Trim();
-            var serviceConn = entity.ServiceConnectionId?.Trim();
-            if (!string.IsNullOrEmpty(pipeline) && !string.IsNullOrEmpty(serviceConn))
-            {
-                await AppendLogAsync(db, migrationId, "Step 3/3: gh ado2gh rewire-pipeline…").ConfigureAwait(false);
-                var rewireArgs = new List<string>
-                {
-                    "ado2gh", "rewire-pipeline",
-                    "--ado-org", adoOrg,
-                    "--ado-team-project", adoProject,
-                    "--github-org", githubOwner.Trim(),
-                    "--github-repo", entity.RepoName,
-                    "--service-connection-id", serviceConn,
-                };
-                // ado2gh: name/path uses --ado-pipeline; numeric definition id from pipeline URL uses --ado-pipeline-id (mutually exclusive).
-                if (int.TryParse(pipeline, NumberStyles.None, CultureInfo.InvariantCulture, out var pipelineDefId) &&
-                    pipelineDefId > 0)
-                {
-                    rewireArgs.Add("--ado-pipeline-id");
-                    rewireArgs.Add(pipelineDefId.ToString(CultureInfo.InvariantCulture));
-                }
-                else
-                {
-                    rewireArgs.Add("--ado-pipeline");
-                    rewireArgs.Add(pipeline);
-                }
-                var (rwCode, rwOut) = await GhCliRunner.RunAsync(ghExe, workRoot, rewireArgs, adoPat, githubPat).ConfigureAwait(false);
-                await AppendLogAsync(db, migrationId, SanitizeGhOutput("rewire-pipeline output:", rwOut)).ConfigureAwait(false);
-                if (rwCode != 0)
-                {
-                    await FailAsync(db, migrationId,
-                            $"gh ado2gh rewire-pipeline failed (exit {rwCode}). Repository may already be on GitHub; fix pipeline settings and retry.{Ado2GhExtensionInstallHint(rwOut)}")
-                        .ConfigureAwait(false);
-                    return;
-                }
-            }
-            else
-            {
-                await AppendLogAsync(db, migrationId, "Step 3/3: Skipped (no ADO pipeline + service connection id configured).").ConfigureAwait(false);
-            }
-
-            await AppendLogAsync(db, migrationId, "Migration completed successfully.").ConfigureAwait(false);
-            var done = await db.RepoMigrations.FirstAsync(m => m.Id == migrationId).ConfigureAwait(false);
-            done.Status = MigrationStatus.Completed;
-            done.UpdatedAt = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync().ConfigureAwait(false);
+            Append("Migration completed successfully.");
+            return TrimLogs(new MigrationJobResult(true, log.ToString(), null));
+        }
+        catch (OperationCanceledException)
+        {
+            Append("Cancelled.");
+            throw;
         }
         catch (Win32Exception ex) when (ex.NativeErrorCode == 2 && OperatingSystem.IsWindows())
         {
-            _logger.LogError(ex, "GitHub CLI not found for migration {MigrationId}", migrationId);
-            await FailAsync(db, migrationId, GhNotFoundUserHint).ConfigureAwait(false);
+            _logger.LogError(ex, "GitHub CLI not found for migration job");
+            return Fail(log, GhNotFoundUserHint);
         }
         catch (IOException ex) when (ex.Message.Contains("cannot find the file", StringComparison.OrdinalIgnoreCase))
         {
-            _logger.LogError(ex, "GitHub CLI not found (IO) for migration {MigrationId}", migrationId);
-            await FailAsync(db, migrationId, GhNotFoundUserHint).ConfigureAwait(false);
+            _logger.LogError(ex, "GitHub CLI not found (IO) for migration job");
+            return Fail(log, GhNotFoundUserHint);
         }
         catch (Exception ex) when (IsWindowsProcessStartFailureForGh(ex))
         {
-            _logger.LogError(ex, "GitHub CLI process start failed for migration {MigrationId}", migrationId);
-            await FailAsync(db, migrationId, GhNotFoundUserHint).ConfigureAwait(false);
+            _logger.LogError(ex, "GitHub CLI process start failed for migration job");
+            return Fail(log, GhNotFoundUserHint);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Migration job failed for {MigrationId}", migrationId);
+            _logger.LogError(ex, "Migration job failed");
             var detail = SanitizeErrorMessage(ex);
-            await FailAsync(db, migrationId, $"Unexpected error: {detail}").ConfigureAwait(false);
+            return Fail(log, $"Unexpected error: {detail}");
         }
         finally
         {
@@ -230,9 +175,24 @@ public class MigrationJobExecutor
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Could not delete temp ado2gh directory for {MigrationId}", migrationId);
+                _logger.LogWarning(ex, "Could not delete temp ado2gh directory for job {WorkId}", workId);
             }
         }
+    }
+
+    private static MigrationJobResult Fail(StringBuilder log, string message)
+    {
+        var ts = DateTimeOffset.UtcNow.ToString("u");
+        log.Append('[').Append(ts).Append("] ").AppendLine(message);
+        return TrimLogs(new MigrationJobResult(false, log.ToString(), message));
+    }
+
+    private static MigrationJobResult TrimLogs(MigrationJobResult result)
+    {
+        const int maxLen = 20000;
+        if (result.Logs.Length <= maxLen)
+            return result;
+        return result with { Logs = result.Logs[^maxLen..] };
     }
 
     private static bool IsWindowsProcessStartFailureForGh(Exception ex)
@@ -279,6 +239,51 @@ public class MigrationJobExecutor
         return " Install the ado2gh extension on the machine that runs this API (same user as the service if applicable), then restart the API: gh extension install github/gh-ado2gh";
     }
 
+    /// <summary>Puts redacted gh output into the API/UI error so operators see the real failure, not only exit code.</summary>
+    private static string BuildMigrateRepoFailureUserMessage(int exitCode, string? migOut)
+    {
+        var raw = migOut ?? string.Empty;
+        var cleaned = RedactSecrets(raw).Trim();
+        var extHint = Ado2GhExtensionInstallHint(raw);
+
+        string body;
+        if (string.IsNullOrWhiteSpace(cleaned))
+        {
+            body =
+                "No output was captured from GitHub CLI. On the machine running this API: run `gh version`, then `gh extension list` (expect github/gh-ado2gh), and run the same migrate-repo from a shell as the same user as the API process.";
+        }
+        else
+        {
+            const int max = 1800;
+            var tail = cleaned.Length <= max ? cleaned : "…" + cleaned[^max..];
+            body = tail;
+        }
+
+        var msg = $"gh ado2gh migrate-repo failed (exit {exitCode}). {body}";
+        if (!string.IsNullOrEmpty(extHint))
+            msg += extHint;
+
+        if (raw.Contains("enterprise importer", StringComparison.OrdinalIgnoreCase) &&
+            (raw.Contains("403", StringComparison.Ordinal) || raw.Contains("401", StringComparison.Ordinal) ||
+             raw.Contains("permission", StringComparison.OrdinalIgnoreCase) ||
+             raw.Contains("denied", StringComparison.OrdinalIgnoreCase)))
+        {
+            msg +=
+                " Often this is GitHub Enterprise Importer access: org admin must allow migrations, and the GitHub PAT needs scopes to create repos in the target org (e.g. repo, admin:org for classic PATs).";
+        }
+
+        if (raw.Contains("CreateMigrationSource", StringComparison.OrdinalIgnoreCase) ||
+            raw.Contains("migrator role", StringComparison.OrdinalIgnoreCase))
+        {
+            msg +=
+                " [Action] Enterprise Importer is stricter than normal org membership: you need org Owner or the Migrator role (Member alone is not enough). Ask an org owner to grant Migrator under Enterprise Importer settings. If the org uses SAML SSO, authorize this PAT for the org (GitHub → Settings → Applications). PAT also needs repo + metadata scopes as in GitHub’s GEI docs.";
+        }
+
+        if (msg.Length > 2800)
+            msg = msg[..2800] + "…";
+        return msg;
+    }
+
     private static string SanitizeGhOutput(string prefix, string output)
     {
         var cleaned = RedactSecrets(output);
@@ -308,30 +313,5 @@ public class MigrationJobExecutor
         if (combined.Length > 2500)
             combined = combined[..2500] + "…";
         return string.IsNullOrEmpty(combined) ? "See server logs." : combined;
-    }
-
-    private static async Task AppendLogAsync(ApplicationDbContext db, Guid id, string line)
-    {
-        var row = await db.RepoMigrations.FirstAsync(m => m.Id == id).ConfigureAwait(false);
-        var ts = DateTimeOffset.UtcNow.ToString("u");
-        var next = string.IsNullOrEmpty(row.Logs) ? $"[{ts}] {line}" : $"{row.Logs}\n[{ts}] {line}";
-        if (next.Length > 15500)
-            next = next[^15500..];
-        row.Logs = next;
-        row.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync().ConfigureAwait(false);
-    }
-
-    private static async Task FailAsync(ApplicationDbContext db, Guid id, string message)
-    {
-        var row = await db.RepoMigrations.FirstAsync(m => m.Id == id).ConfigureAwait(false);
-        var ts = DateTimeOffset.UtcNow.ToString("u");
-        var next = string.IsNullOrEmpty(row.Logs) ? $"[{ts}] {message}" : $"{row.Logs}\n[{ts}] {message}";
-        if (next.Length > 15500)
-            next = next[^15500..];
-        row.Logs = next;
-        row.Status = MigrationStatus.Failed;
-        row.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync().ConfigureAwait(false);
     }
 }

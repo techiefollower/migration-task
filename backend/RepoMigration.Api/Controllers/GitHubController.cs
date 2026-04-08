@@ -1,11 +1,13 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RepoMigration.Core.Contracts;
 using RepoMigration.Core.Dtos;
 
 namespace RepoMigration.Api.Controllers;
 
+[Authorize]
 [ApiController]
-[Route("api/[controller]")]
+[Route("api/github")]
 public class GitHubController : ControllerBase
 {
     private readonly IGitHubService _github;
@@ -32,6 +34,13 @@ public class GitHubController : ControllerBase
             request.Owner,
             request.RepoNames,
             cancellationToken);
+        return Ok(result);
+    }
+
+    [HttpPost("owner-kind")]
+    public async Task<ActionResult<GitHubOwnerKindResponse>> OwnerKind([FromBody] GitHubOwnerKindRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _github.GetOwnerKindAsync(request.PersonalAccessToken, request.Owner, cancellationToken);
         return Ok(result);
     }
 }

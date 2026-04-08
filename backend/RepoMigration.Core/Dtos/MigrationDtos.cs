@@ -1,35 +1,37 @@
 namespace RepoMigration.Core.Dtos;
 
-public record QueueMigrationItemDto(
+/// <summary>One repository the user chose to migrate, with optional ADO display name.</summary>
+public record MigrateRepositoryItemDto(
     string SourceRemoteUrl,
     string TargetRepoName,
-    string? TargetRepoVisibility = null,
-    string? AdoPipeline = null,
-    string? ServiceConnectionId = null);
+    string? AdoRepoName = null);
 
-public record QueueMigrationsRequest(
+public record ExecuteMigrationsRequest(
     string AdoPersonalAccessToken,
     string GitHubPersonalAccessToken,
     string GitHubOwner,
-    IReadOnlyList<QueueMigrationItemDto> Repositories);
+    IReadOnlyList<MigrateRepositoryItemDto> Repositories,
+    string? TargetRepoVisibility = null);
 
-public record QueuedMigrationDto(Guid Id, string RepoName, string TargetUrl);
+public record ExecutedRepoResultDto(
+    string AdoRepoName,
+    string TargetRepoName,
+    bool Success,
+    string? Error,
+    string? LogsTail);
 
-public record QueueMigrationsResponse(IReadOnlyList<QueuedMigrationDto> Queued);
+public record ExecuteMigrationsResponse(
+    IReadOnlyList<ExecutedRepoResultDto> Results,
+    bool AllSucceeded);
 
-public record MigrationListItemDto(
-    Guid Id,
-    string RepoName,
-    string SourceUrl,
-    string TargetUrl,
-    string Status,
-    string? Logs,
-    DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
-
-public record MigrationsSummaryDto(int Pending, int InProgress, int Completed, int Failed, int Total);
-
-public record RetryMigrationRequest(
+/// <summary>Parameters for a single <c>gh ado2gh migrate-repo</c> run.</summary>
+public record MigrationJobParams(
+    string SourceRemoteUrl,
+    string TargetRepoName,
+    string TargetRepoVisibility,
     string AdoPersonalAccessToken,
     string GitHubPersonalAccessToken,
     string GitHubOwner);
+
+/// <summary>Outcome of one migration job (in-memory; not persisted).</summary>
+public record MigrationJobResult(bool Success, string Logs, string? ErrorMessage);

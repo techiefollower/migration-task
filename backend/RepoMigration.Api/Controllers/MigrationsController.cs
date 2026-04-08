@@ -1,57 +1,32 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RepoMigration.Core.Contracts;
 using RepoMigration.Core.Dtos;
 
 namespace RepoMigration.Api.Controllers;
 
+[Authorize]
 [ApiController]
-[Route("api/[controller]")]
+[Route("api/migrations")]
 public class MigrationsController : ControllerBase
 {
-    private readonly IMigrationService _migrations;
+    private readonly IMigrationOrchestrator _orchestrator;
 
-    public MigrationsController(IMigrationService migrations)
+    public MigrationsController(IMigrationOrchestrator orchestrator)
     {
-        _migrations = migrations;
+        _orchestrator = orchestrator;
     }
 
-    [HttpPost("queue")]
-    public async Task<ActionResult<QueueMigrationsResponse>> Queue([FromBody] QueueMigrationsRequest request, CancellationToken cancellationToken)
+    /// <summary>Validates tokens, org, and repo names, then runs <c>gh ado2gh migrate-repo</c> for each repository (may take a long time).</summary>
+    [HttpPost("execute")]
+    public async Task<ActionResult<ExecuteMigrationsResponse>> Execute(
+        [FromBody] ExecuteMigrationsRequest request,
+        CancellationToken cancellationToken)
     {
         try
         {
-            var result = await _migrations.QueueAsync(request, cancellationToken);
+            var result = await _orchestrator.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
             return Ok(result);
-        }
-        catch (ArgumentException ex)
-        {
-            return BadRequest(new { error = ex.Message });
-        }
-    }
-
-    [HttpGet]
-    public async Task<ActionResult<IReadOnlyList<MigrationListItemDto>>> List(CancellationToken cancellationToken)
-    {
-        var items = await _migrations.ListAsync(cancellationToken);
-        return Ok(items);
-    }
-
-    [HttpGet("summary")]
-    public async Task<ActionResult<MigrationsSummaryDto>> Summary(CancellationToken cancellationToken)
-    {
-        var summary = await _migrations.GetSummaryAsync(cancellationToken);
-        return Ok(summary);
-    }
-
-    [HttpPost("{id:guid}/retry")]
-    public async Task<IActionResult> Retry(Guid id, [FromBody] RetryMigrationRequest request, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var ok = await _migrations.RetryAsync(id, request, cancellationToken);
-            if (!ok)
-                return NotFound();
-            return NoContent();
         }
         catch (ArgumentException ex)
         {

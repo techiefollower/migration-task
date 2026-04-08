@@ -1,8 +1,6 @@
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using RepoMigration.Core.Contracts;
-using RepoMigration.Infrastructure.Data;
 using RepoMigration.Infrastructure.Services;
 
 namespace RepoMigration.Infrastructure;
@@ -11,11 +9,7 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
-        var connectionString = configuration.GetConnectionString("DefaultConnection")
-            ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is not configured.");
-
-        services.AddDbContext<ApplicationDbContext>(options =>
-            options.UseSqlServer(connectionString));
+        _ = configuration;
 
         services.AddHttpClient("ado");
         services.AddHttpClient("github", client =>
@@ -25,7 +19,7 @@ public static class DependencyInjection
 
         services.AddScoped<IAdoDevOpsService, AdoDevOpsService>();
         services.AddScoped<IGitHubService, GitHubService>();
-        services.AddScoped<IMigrationService, MigrationService>();
+        services.AddScoped<IMigrationOrchestrator, MigrationOrchestrator>();
         services.AddSingleton<IGhCliPathResolver, GhCliPathResolver>();
         services.AddScoped<MigrationJobExecutor>();
 

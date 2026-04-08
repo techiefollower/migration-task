@@ -1,11 +1,13 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RepoMigration.Core.Contracts;
 using RepoMigration.Core.Dtos;
 
 namespace RepoMigration.Api.Controllers;
 
+[Authorize]
 [ApiController]
-[Route("api/[controller]")]
+[Route("api/ado")]
 public class AdoController : ControllerBase
 {
     private readonly IAdoDevOpsService _ado;
